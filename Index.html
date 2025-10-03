@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>Aromen & Düfte – Startseite</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+    }
+    body {
+      background: url("background-spice.PNG") no-repeat center center fixed;
+      background-size: cover;
+    }
+    .hotspot-container {
+      position: relative;
+      width: 100%;
+      height: 100%;
+    }
+    .hotspot {
+      position: absolute;
+      top: 65%;     /* Abstand von oben (z. B. 65% der Bildhöhe) */
+      left: 50%;    /* Mitte horizontal */
+      transform: translate(-50%, -50%);
+      width: 250px; /* Breite des unsichtbaren Buttons */
+      height: 80px; /* Höhe des unsichtbaren Buttons */
+      cursor: pointer;
+    }
+    .hotspot a {
+      display: block;
+      width: 100%;
+      height: 100%;
+      text-indent: -9999px; /* macht den Text unsichtbar */
+    }
+  </style>
+</head>
+<body>
+  <div class="hotspot-container">
+    <div class="hotspot">
+      <a href="band27_multi_search.html">Button klicken</a>
+    </div>
+  </div>
+</body>
+</html>
