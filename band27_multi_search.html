@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Band 27 – Suche über 6 Blöcke (30.000 Datensätze)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.4;margin:16px}
+h1{font-size:20px;margin:0 0 8px 0}
+.controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin:10px 0}
+input[type=text]{padding:8px;border:1px solid #ddd;border-radius:6px;width:100%}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
+button{padding:8px 10px;border:1px solid #ddd;border-radius:6px;background:#fafafa;cursor:pointer}
+button:hover{background:#f2f2f2}
+.small{color:#666;font-size:12px}
+#drop{border:2px dashed #bbb;border-radius:8px;padding:12px;text-align:center;margin:8px 0;color:#666}
+#drop.drag{background:#f9f9ff;border-color:#88a; color:#334}
+table{width:100%;border-collapse:collapse;margin-top:10px}
+th,td{border-bottom:1px solid #eee;padding:6px;vertical-align:top}
+th{position:sticky;top:0;background:#fff}
+.badge{display:inline-block;background:#eef;border:1px solid #ccd;border-radius:999px;padding:2px 8px;font-size:12px;margin-left:6px}
+.count{font-weight:600}
+#colpanel{position:fixed;right:16px;top:16px;max-width:320px;background:#fff;border:1px solid #ddd;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.08);padding:12px;display:none;z-index:10}
+#colpanel h3{margin:0 0 8px 0;font-size:16px}
+#colpanel .cols{display:grid;grid-template-columns:1fr 1fr;gap:6px;max-height:50vh;overflow:auto}
+#pager{display:flex;gap:6px;align-items:center;margin-top:8px}
+#pager input{width:70px}
+mark{background: #ffec99}
+</style>
+</head>
+<body>
+<h1>Band 27 – Suche über 6 Blöcke <span class="badge" id="status">0 Dateien geladen</span></h1>
+
+<div id="drop">CSV-Dateien hierher ziehen (die 6 Blöcke) – oder unten Dateien/Ordner wählen.</div>
+
+<div class="toolbar">
+  <input type="file" id="files" multiple>
+  <label><input type="file" id="folder" webkitdirectory directory style="display:none"><button id="btnFolder">Ordner wählen</button></label>
+  <button id="btnCols">Spalten ein-/ausblenden</button>
+  <button id="btnExport">Treffer als CSV exportieren</button>
+  <button id="btnReset">Filter zurücksetzen</button>
+</div>
+
+<div class="small">Tipp: Mehrere Begriffe pro Feld mit <b>Leerzeichen</b> trennen → innerhalb eines Feldes <b>ODER</b>-Logik, über mehrere Felder <b>UND</b>-Logik. Groß-/Kleinschreibung egal.</div>
+
+<div class="controls">
+  <input id="qGlobal" placeholder="🔎 Globale Suche (alle Spalten)">
+  <input id="qKontinent" placeholder="Kontinent">
+  <input id="qLand" placeholder="Land">
+  <input id="qRegion" placeholder="Region">
+  <input id="qGattung" placeholder="Gattung">
+  <input id="qUnter" placeholder="Unterkategorie">
+  <input id="qFach" placeholder="Fachlicher Name">
+  <input id="qGebr" placeholder="Gebräuchlicher Name (DE)">
+  <input id="qNutz" placeholder="Nutzung (Stichworte)">
+  <input id="qWirk" placeholder="Wirkung (Stichworte)">
+  <input id="qMerk" placeholder="Merkmale / Besonderes">
+</div>
+
+<div id="summary" class="small">Bereit.</div>
+
+<div id="pager" class="small" style="display:none">
+  <span id="hitinfo"></span>
+  <button id="prev">◀</button>
+  <span>Seite <span id="pageNo">1</span> / <span id="pageMax">1</span></span>
+  <button id="next">▶</button>
+  <span>Zeilen pro Seite:</span>
+  <select id="pageSize">
+    <option>200</option>
+    <option selected>500</option>
+    <option>1000</option>
+    <option>2000</option>
+  </select>
+</div>
+
+<table>
+  <thead><tr id="thead"></tr></thead>
+  <tbody id="tbody"></tbody>
+</table>
+
+<div id="colpanel">
+  <h3>Spalten</h3>
+  <div class="cols" id="colchecks"></div>
+  <div class="actions" style="margin-top:8px;text-align:right">
+    <button id="colAll">Alle</button>
+    <button id="colNone">Keine</button>
+    <button id="colClose">Schliessen</button>
+  </div>
+</div>
+
+<script>
+// --- CSV parser (Semikolon, mit Quote-Unterstützung) ---
+function parseCSV(text, delimiter=';'){
+  const rows = [];
+  let cur = '', row = [], inQ = false;
+  for(let i=0;i<text.length;i++){
+    const c = text[i], n = text[i+1];
+    if(inQ){
+      if(c === '"' && n === '"'){ cur += '"'; i++; }
+      else if(c === '"'){ inQ = false; }
+      else { cur += c; }
+    }else{
+      if(c === '"'){ inQ = true; }
+      else if(c === delimiter){ row.push(cur); cur=''; }
+      else if(c === '\n'){ row.push(cur); rows.push(row); row=[]; cur=''; }
+      else if(c === '\r'){ /* ignore */ }
+      else { cur += c; }
+    }
+  }
+  if(cur.length>0 || row.length>0){ row.push(cur); rows.push(row); }
+  return rows;
+}
+
+// --- State ---
+let headers = [];
+let data = [];   // array of objects
+let filtered = [];
+let colVis = {};
+let page = 1;
+let page_size = 500;
+const thead = document.getElementById('thead');
+const tbody = document.getElementById('tbody');
+const status = document.getElementById('status');
+const summary = document.getElementById('summary');
+const pager = document.getElementById('pager');
+const hitinfo = document.getElementById('hitinfo');
+const pageNo = document.getElementById('pageNo');
+const pageMax = document.getElementById('pageMax');
+const pageSizeSel = document.getElementById('pageSize');
+
+// --- UI bindings ---
+const inputs = ["qGlobal","qKontinent","qLand","qRegion","qGattung","qUnter","qFach","qGebr","qNutz","qWirk","qMerk"].map(id=>document.getElementById(id));
+inputs.forEach(i=> i.addEventListener('input', ()=>{ page=1; render(); }));
+
+document.getElementById('btnExport').addEventListener('click', ()=>exportCSV());
+document.getElementById('btnReset').addEventListener('click', ()=>{ inputs.forEach(i=>i.value=''); page=1; render(); });
+document.getElementById('prev').addEventListener('click', ()=>{ if(page>1){ page--; render(); }});
+document.getElementById('next').addEventListener('click', ()=>{ const m = Math.max(1, Math.ceil(filtered.length/page_size)); if(page<m){ page++; render(); }});
+pageSizeSel.addEventListener('change', ()=>{ page_size = parseInt(pageSizeSel.value,10)||500; page=1; render(); });
+
+// Column panel
+const btnCols = document.getElementById('btnCols');
+const colpanel = document.getElementById('colpanel');
+const colchecks = document.getElementById('colchecks');
+const colAll = document.getElementById('colAll');
+const colNone = document.getElementById('colNone');
+const colClose = document.getElementById('colClose');
+btnCols.addEventListener('click', ()=>{ colpanel.style.display = (colpanel.style.display==='none' || !colpanel.style.display)?'block':'none'; });
+colAll.addEventListener('click', ()=>{ headers.forEach((h,i)=>colVis[i]=true); syncChecks(); renderHeader(headers); render(); });
+colNone.addEventListener('click', ()=>{ headers.forEach((h,i)=>colVis[i]=false); syncChecks(); renderHeader(headers); render(); });
+colClose.addEventListener('click', ()=>{ colpanel.style.display='none'; });
+
+function buildColPanel(hs){
+  if(!hs||hs.length===0) return;
+  if(Object.keys(colVis).length===0){ hs.forEach((h,i)=>colVis[i]=true); }
+  colchecks.innerHTML='';
+  hs.forEach((h,i)=>{
+    const id='chk'+i;
+    const wrap=document.createElement('label'); wrap.style.display='flex'; wrap.style.alignItems='center'; wrap.style.gap='6px';
+    const cb=document.createElement('input'); cb.type='checkbox'; cb.id=id; cb.checked=!!colVis[i];
+    cb.addEventListener('change', ()=>{ colVis[i]=cb.checked; renderHeader(headers); render(); });
+    wrap.appendChild(cb); wrap.appendChild(document.createTextNode(h));
+    colchecks.appendChild(wrap);
+  });
+}
+function syncChecks(){ Array.from(colchecks.querySelectorAll('input[type=checkbox]')).forEach((cb,i)=>{ cb.checked = !!colVis[i]; }); }
+
+// --- Rendering ---
+function escapeHTML(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+function renderHeader(hs){
+  thead.innerHTML='';
+  hs.forEach((h,i)=>{
+    const th=document.createElement('th'); th.textContent=h;
+    th.style.display = colVis[i] ? '' : 'none';
+    thead.appendChild(th);
+  });
+}
+function render(){
+  if(headers.length===0){ tbody.innerHTML=''; pager.style.display='none'; return; }
+  // Build filters
+  const q = inputs.map(i=>i.value.toLowerCase().trim());
+  const qGlobal = q[0].split(/\s+/).filter(Boolean);
+  const fieldsTerms = {
+    "Kontinent": q[1].split(/\s+/).filter(Boolean),
+    "Land": q[2].split(/\s+/).filter(Boolean),
+    "Region": q[3].split(/\s+/).filter(Boolean),
+    "Gattung": q[4].split(/\s+/).filter(Boolean),
+    "Unterkategorie": q[5].split(/\s+/).filter(Boolean),
+    "Fachlicher_Name": q[6].split(/\s+/).filter(Boolean),
+    "Gebraeuchlicher_Name_DE": q[7].split(/\s+/).filter(Boolean),
+    "Nutzung_Stichworte": q[8].split(/\s+/).filter(Boolean),
+    "Wirkung_Stichworte": q[9].split(/\s+/).filter(Boolean),
+    // Merkmale: auf beide Felder prüfen
+    "Merkmale_Kurz": q[10].split(/\s+/).filter(Boolean),
+    "Besonderes": q[10].split(/\s+/).filter(Boolean),
+  };
+  const termIn = (val, terms)=> terms.length===0 ? true : terms.some(t=> (val||"").toString().toLowerCase().includes(t));
+  const globalOK = (row)=> qGlobal.length===0 ? true : qGlobal.every(t=> Object.values(row).some(v=> (v||"").toString().toLowerCase().includes(t)));
+
+  filtered = data.filter(row=>{
+    if(!globalOK(row)) return false;
+    for(const [k,terms] of Object.entries(fieldsTerms)){
+      if(!termIn(row[k], terms)) return false;
+    }
+    return true;
+  });
+
+  // Render summary
+  summary.innerHTML = `Geladen: <span class="count">${data.length.toLocaleString('de-CH')}</span> Zeilen aus ${loadedFiles.size} Datei(en). Treffer: <span class="count">${filtered.length.toLocaleString('de-CH')}</span>.`;
+
+  // Pagination
+  page_size = parseInt(pageSizeSel.value,10)||500;
+  const maxPage = Math.max(1, Math.ceil(filtered.length / page_size));
+  if(page>maxPage) page = maxPage;
+  const start = (page-1)*page_size, end = Math.min(filtered.length, start+page_size);
+  const pageRows = filtered.slice(start, end);
+
+  pager.style.display = filtered.length > page_size ? 'flex' : 'none';
+  pageNo.textContent = page.toString();
+  pageMax.textContent = maxPage.toString();
+  hitinfo.textContent = `${(start+1).toLocaleString('de-CH')}–${end.toLocaleString('de-CH')} von ${filtered.length.toLocaleString('de-CH')}`;
+
+  // Render rows
+  const hs = headers;
+  tbody.innerHTML='';
+  const frag = document.createDocumentFragment();
+  pageRows.forEach(r=>{
+    const tr=document.createElement('tr');
+    hs.forEach((h,i)=>{
+      const td=document.createElement('td');
+      td.style.display = colVis[i] ? '' : 'none';
+      td.textContent = r[h] ?? '';
+      tr.appendChild(td);
+    });
+    tr.addEventListener('click', ()=>showCard(r));
+    frag.appendChild(tr);
+  });
+  tbody.appendChild(frag);
+}
+
+function showCard(row){
+  const hs = headers;
+  const lines = hs.map(h=> `<b>${escapeHTML(h)}:</b> ${escapeHTML(row[h]??'')}`).join('<br>');
+  const w = window.open('', '_blank');
+  w.document.write(`<meta charset="utf-8"><title>Datensatz ${escapeHTML(row['ID']||'')}</title><body style="font-family:system-ui,sans-serif;padding:16px">${lines}</body>`);
+  w.document.close();
+}
+
+// --- Export ---
+function toCSVRow(arr){ return arr.map(v=>{ const s=(v??'').toString(); return (s.includes(';')||s.includes('"')||s.includes('\n'))?('"'+s.replace(/"/g,'""')+'"'):s; }).join(';'); }
+function exportCSV(){
+  if(filtered.length===0){ alert('Keine Treffer zum Export.'); return; }
+  const hdr = headers;
+  const csv = [toCSVRow(hdr)].concat(filtered.map(r=> toCSVRow(hdr.map(h=> r[h]??'')))).join('\n');
+  const blob = new Blob(["\ufeff"+csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download='band27_treffer.csv'; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// --- File loading (multi-file & directory) ---
+const filesInput = document.getElementById('files');
+const btnFolder = document.getElementById('btnFolder');
+const folderInput = document.getElementById('folder');
+const drop = document.getElementById('drop');
+
+btnFolder.addEventListener('click', ()=> folderInput.click());
+filesInput.addEventListener('change', (e)=> handleFiles(e.target.files));
+folderInput.addEventListener('change', (e)=> handleFiles(e.target.files));
+
+drop.addEventListener('dragover', (e)=>{ e.preventDefault(); drop.classList.add('drag'); });
+drop.addEventListener('dragleave', ()=> drop.classList.remove('drag'));
+drop.addEventListener('drop', (e)=>{ e.preventDefault(); drop.classList.remove('drag'); const items = e.dataTransfer.items; if(items && items.length){ // directory support
+  const filePromises = [];
+  for(const it of items){
+    const entry = it.webkitGetAsEntry && it.webkitGetAsEntry();
+    if(entry && entry.isDirectory){
+      filePromises.push(readDirectory(entry));
+    }else{
+      const f = it.getAsFile && it.getAsFile();
+      if(f) filePromises.push(Promise.resolve([f]));
+    }
+  }
+  Promise.all(filePromises).then(arrs=> handleFiles(arrs.flat()));
+} else { handleFiles(e.dataTransfer.files); }});
+
+function readDirectory(entry){
+  return new Promise(resolve=>{
+    const reader = entry.createReader();
+    const out = [];
+    const read = ()=> reader.readEntries(entries=>{
+      if(entries.length===0) return resolve(out);
+      for(const en of entries){
+        if(en.isFile) en.file(f=> out.push(f));
+        if(en.isDirectory) out.push(readDirectory(en));
+      }
+      read();
+    });
+    read();
+  }).then(async list=>{
+    // flatten nested promises
+    const flat = [];
+    for(const item of list){
+      if(item && item.then){ const sub = await item; flat.push(...sub); }
+      else if(item) flat.push(item);
+    }
+    return flat;
+  });
+}
+
+const loadedFiles = new Set();
+
+async function handleFiles(fileList){
+  const csvFiles = Array.from(fileList).filter(f=> /\.csv$/i.test(f.name));
+  if(csvFiles.length===0){ alert('Keine CSV-Dateien erkannt.'); return; }
+  const texts = await Promise.all(csvFiles.map(f=> f.text()));
+  let added = 0;
+  for(let i=0;i<csvFiles.length;i++){
+    const f = csvFiles[i];
+    if(loadedFiles.has(f.name)) continue;
+    const rows = parseCSV(texts[i], ';').filter(r=> r.length>1);
+    if(rows.length===0) continue;
+    const hdr = rows[0];
+    if(headers.length===0){ headers = hdr; renderHeader(headers); buildColPanel(headers); }
+    // Map to objects
+    for(let r=1;r<rows.length;r++){
+      const obj = {};
+      for(let c=0;c<headers.length;c++){ obj[headers[c]] = rows[r][c] ?? ''; }
+      data.push(obj);
+    }
+    loadedFiles.add(f.name);
+    added += (rows.length-1);
+  }
+  status.textContent = `${loadedFiles.size} Datei(en) geladen`;
+  summary.innerHTML = `Geladen: <span class="count">${data.length.toLocaleString('de-CH')}</span> Zeilen aus ${loadedFiles.size} Datei(en).`;
+  page=1;
+  render();
+}
+
+// Optional: Versuch, automatisch bekannte Dateinamen per fetch() zu laden (funktioniert nur, wenn über http(s) geöffnet, nicht über file://)
+const known = [
+  'band27_max_dataset_block1.csv',
+  'band27_max_dataset_block2.csv',
+  'band27_max_dataset_block3.csv',
+  'band27_max_dataset_block4.csv',
+  'band27_max_dataset_block5.csv',
+  'band27_max_dataset_block6.csv'
+];
+(async function tryAutoLoad(){
+  try{
+    const originOK = location.origin.startsWith('http'); // nur über Server
+    if(!originOK) return;
+    const existing = [];
+    for(const name of known){
+      try{
+        const res = await fetch(name);
+        if(res.ok){
+          const text = await res.text();
+          const rows = parseCSV(text,';').filter(r=> r.length>1);
+          if(rows.length>1){
+            if(headers.length===0){ headers = rows[0]; renderHeader(headers); buildColPanel(headers); }
+            for(let r=1;r<rows.length;r++){
+              const obj={}; headers.forEach((h,ci)=> obj[h]=rows[r][ci]??'');
+              data.push(obj);
+            }
+            loadedFiles.add(name);
+          }
+        }
+      }catch(e){}
+    }
+    if(loadedFiles.size>0){
+      status.textContent = `${loadedFiles.size} Datei(en) geladen (auto)`;
+      page=1; render();
+    }
+  }catch(e){}
+})();
+</script>
+</body>
+</html>
